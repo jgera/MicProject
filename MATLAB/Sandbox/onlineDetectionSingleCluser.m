@@ -1,9 +1,10 @@
 close all
+tic
 
 Fs = 48000;
-N = 64; % Frame size
-L = 100; % Resampling
-V_SOUND = 340.0;
+N = 32; % Frame size
+L = 1000; % Resampling
+V_SOUND = 340.29;
 
 
 H = dsp.AudioRecorder;
@@ -11,11 +12,11 @@ H.DeviceName = 'US-1800';
 H.SampleRate = Fs;
 H.SamplesPerFrame = N;
 H.NumChannels = 3;
-H.DeviceDataType = '24-bit integer';
+H.DeviceDataType = '24-bit integer';%'32-bit float';
 H.OutputNumOverrunSamples = true;
 
 % Mic positions
-d = 0.024; % mic spacing in equilateral triangle
+d = 0.024; %m. mic spacing in equilateral triangle
 r_12 = [d 0 0]';
 r_13 = [d/2 d*sqrt(3)/2 0]';
 
@@ -30,61 +31,68 @@ minMain_dB = 20;
 % Levels
 prevMain_dB = 0;
 mainAvg_dB = 0;
-mainAvg_alpha = 0.015*N/64;
+mainAvg_alpha = 0.015*(N/64)*(48000/Fs);
+
+% Window function
+w = repmat(blackman(N),1,H.NumChannels);
 
 figure
-
 while true
     
     % Extract frame
     [frame , overrun] = step(H);
+    if overrun > 0 
+        fprintf('Overrun: %i\n', overrun)
+    end
 
     % Main tap highpass filter
     [frame_main, zi_main] = filter(b_main,a_main,frame,zi_main);
 
     % Calculate levels
-    tap = 0;
     main_dB = db(rms(frame_main));
     if main_dB - mainAvg_dB > minMain_dB
         if main_dB - prevMain_dB > minMainIncrease_dB
         
             % Tap detected
-
+            
             % Resample and cross correlate
-            frame_resampled = interpft(frame_main,N*L);
+            frame_resampled = interpft(frame_main.*w,N*L);
             maxlag = floor((0.024/340)*Fs*L);
             [r, lags] = xcorr(frame_resampled, maxlag);
             [maxcross, at_index] = max(r);
-
-            % Extract delays (in meters...)
-            d(1,1) = -lags(at_index(2))*V_SOUND/(Fs*L); % delay from 1 to 2
-            d(2,1) = lags(at_index(7))*V_SOUND/(Fs*L); % delay from 1 to 3
-            d(3,1) = -lags(at_index(6))*V_SOUND/(Fs*L); % delay from 2 to 3
-
+            
+            % Extract "delays" (in meters...)
+            delays(1,1) = -lags(at_index(2))*V_SOUND/(Fs*L); % delay from 1 to 2
+            delays(2,1) = lags(at_index(7))*V_SOUND/(Fs*L); % delay from 1 to 3
+            delays(3,1) = -lags(at_index(6))*V_SOUND/(Fs*L); % delay from 2 to 3
+            
             % Calculate normal vector of wavefront approximated by a plane
             C = [    r_12'    ;
                      r_13'    ;
-                 (r_13-r_12)' ];
-
-            A = [0 0 1];
-            b = -1;
-            [v,resnorm,residual,exitflag,output,lambda] = lsqlin(C,d,A,b);
-            v = v/norm(v);
+                 (r_13-r_12)'];
             
+            opt = optimoptions('lsqlin','Algorithm','active-set','Display','none');
+            [v,resnorm,residual,exitflag,output,lambda] = lsqlin(C,delays,[],[], [0 0 1], -1, [],[],[],opt); % z = -1
+            v = v/norm(v);
+ 
             % Figure out the x y coordinates, at 1m, for demo use
             screenPoint = v(1:2)/v(3);
 
 
             figure(1)
-            subplot(3,1,1)
+            subplot(4,1,1)
             plot(lags,r(:,2));
             title('12');
-            subplot(3,1,2)
+            subplot(4,1,2)
             plot(lags,r(:,6));
             title('23');
-            subplot(3,1,3)
+            subplot(4,1,3)
             plot(lags,r(:,7));
             title('31');
+            subplot(4,1,4)
+            plot(frame_main);
+            title('Main frame');
+            
             drawnow
 
             figure(2)
